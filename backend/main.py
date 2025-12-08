@@ -6,7 +6,9 @@ from dotenv import load_dotenv
 import os
 import json
 import base64
-from io import BytesIO
+from faster_whisper import WhisperModel
+import edge_tts
+import tempfile
 
 # Load environment variables
 load_dotenv()
@@ -24,6 +26,17 @@ app.add_middleware(
 
 # Initialize OpenAI client
 client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
+
+# Initialize Faster-Whisper model (use base model for balance of speed/accuracy)
+# Use GPU if available, otherwise CPU with int8 quantization for speed
+import subprocess
+try:
+    subprocess.run(["nvidia-smi"], capture_output=True, check=True)
+    whisper_model = WhisperModel("base", device="cuda", compute_type="float16")
+    print("Whisper model loaded on GPU (CUDA)")
+except:
+    whisper_model = WhisperModel("base", device="cpu", compute_type="int8")
+    print("Whisper model loaded on CPU (int8)")
 
 # Store conversation history per session (in production, use proper session management)
 conversations = {}
@@ -125,18 +138,54 @@ async def voice_chat(
     session_id: str = Form("default")
 ):
     try:
-        # Step 1: Transcribe audio to text using Whisper
+        # Step 1: Transcribe audio to text using Faster-Whisper (local)
         audio_content = await audio.read()
-        audio_file = BytesIO(audio_content)
-        audio_file.name = "recording.webm"
+        print(f"Received audio: {len(audio_content)} bytes")
 
-        transcription = client.audio.transcriptions.create(
-            model="whisper-1",
-            file=audio_file,
-            language="en",  # Specify language for faster processing
-            response_format="text"  # Get plain text instead of verbose JSON
-        )
-        user_text = transcription if isinstance(transcription, str) else transcription.text
+        # Save audio to temporary file for Faster-Whisper processing
+        with tempfile.NamedTemporaryFile(delete=False, suffix=".webm") as temp_audio:
+            temp_audio.write(audio_content)
+            temp_audio_path = temp_audio.name
+
+        print(f"Temp audio file: {temp_audio_path}")
+
+        # Convert webm to wav using ffmpeg for better compatibility with Faster-Whisper
+        with tempfile.NamedTemporaryFile(delete=False, suffix=".wav") as temp_wav:
+            temp_wav_path = temp_wav.name
+
+        try:
+            # Convert webm to wav using ffmpeg
+            try:
+                convert_result = subprocess.run(
+                    ["ffmpeg", "-i", temp_audio_path, "-ar", "16000", "-ac", "1", "-c:a", "pcm_s16le", temp_wav_path, "-y"],
+                    capture_output=True,
+                    check=True
+                )
+                print(f"Audio converted to WAV: {temp_wav_path}")
+            except subprocess.CalledProcessError as e:
+                print(f"FFmpeg conversion failed: {e}")
+                print(f"FFmpeg stderr: {e.stderr.decode() if e.stderr else 'No stderr'}")
+                raise ValueError(f"Failed to convert audio file: {e}")
+
+            # Transcribe with Faster-Whisper using the WAV file
+            segments, info = whisper_model.transcribe(
+                temp_wav_path,
+                language="en",
+                beam_size=1,  # Faster with minimal quality loss
+                vad_filter=True  # Remove silence
+            )
+            user_text = " ".join([segment.text for segment in segments]).strip()
+            print(f"Transcription (Faster-Whisper): '{user_text}'")
+
+            # If transcription is empty, return an error
+            if not user_text:
+                raise ValueError("No speech detected in audio")
+        finally:
+            # Clean up temp files
+            if os.path.exists(temp_audio_path):
+                os.unlink(temp_audio_path)
+            if os.path.exists(temp_wav_path):
+                os.unlink(temp_wav_path)
 
         # Step 2: Get or create conversation history for this session
         if session_id not in conversations:
@@ -170,21 +219,28 @@ async def voice_chat(
             "content": assistant_message
         })
 
-        # Step 7: Generate voice response using TTS
-        # Get voice preference for this session (default to "nova")
-        voice = voice_preferences.get(session_id, "nova")
+        # Step 7: Generate voice response using Edge-TTS (local, fast)
+        # Edge-TTS voices: en-US-AvaNeural (female, professional), en-US-JennyNeural (friendly female)
+        edge_voice = "en-US-AvaNeural"  # High-quality female voice
 
-        speech_response = client.audio.speech.create(
-            model="tts-1",  # Using tts-1 (faster) instead of tts-1-hd
-            voice=voice,
-            input=reply_text,
-            response_format="opus",  # Opus is more efficient than mp3
-            speed=1.0  # Normal speed
-        )
+        # Generate speech with Edge-TTS
+        with tempfile.NamedTemporaryFile(delete=False, suffix=".mp3") as temp_tts:
+            temp_tts_path = temp_tts.name
 
-        # Step 8: Convert audio to base64 for JSON response
-        audio_bytes = speech_response.content
-        audio_base64 = base64.b64encode(audio_bytes).decode('utf-8')
+        try:
+            # Edge-TTS is async, so we need to run it in the event loop
+            communicate = edge_tts.Communicate(reply_text, edge_voice)
+            await communicate.save(temp_tts_path)
+
+            # Read the generated audio file
+            with open(temp_tts_path, "rb") as audio_file:
+                audio_bytes = audio_file.read()
+
+            audio_base64 = base64.b64encode(audio_bytes).decode('utf-8')
+            print(f"TTS generated: {len(audio_bytes)} bytes")
+        finally:
+            # Clean up temp file
+            os.unlink(temp_tts_path)
 
         return VoiceChatResponse(
             reply=reply_text,

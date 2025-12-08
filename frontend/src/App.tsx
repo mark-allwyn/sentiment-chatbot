@@ -1,5 +1,5 @@
 import React, { useState, useRef, useEffect } from 'react';
-import { Send } from 'lucide-react';
+import { Send, Square } from 'lucide-react';
 import Avatar from './components/Avatar';
 import { TypingIndicator } from './components/TypingIndicator';
 import { VoiceRecorder } from './components/VoiceRecorder';
@@ -17,6 +17,8 @@ const App: React.FC = () => {
   const [inputValue, setInputValue] = useState('');
   const [isLoading, setIsLoading] = useState(false);
   const [sentiment, setSentiment] = useState<SentimentState>(SentimentState.NEUTRAL);
+  const [isAudioPlaying, setIsAudioPlaying] = useState(false);
+  const [currentAudioUrl, setCurrentAudioUrl] = useState<string | null>(null);
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const audioRef = useRef<HTMLAudioElement | null>(null);
 
@@ -28,11 +30,51 @@ const App: React.FC = () => {
     scrollToBottom();
   }, [messages, isLoading]);
 
+  // Stop audio playback
+  const stopAudio = () => {
+    if (audioRef.current) {
+      audioRef.current.pause();
+      audioRef.current.currentTime = 0;
+      audioRef.current.src = '';
+    }
+
+    // Clean up Object URL
+    if (currentAudioUrl) {
+      URL.revokeObjectURL(currentAudioUrl);
+      setCurrentAudioUrl(null);
+    }
+
+    setIsAudioPlaying(false);
+  };
+
+  // Keyboard support for stopping audio
+  useEffect(() => {
+    const handleKeyDown = (e: KeyboardEvent) => {
+      if (e.key === 'Escape' && isAudioPlaying) {
+        stopAudio();
+      }
+    };
+
+    window.addEventListener('keydown', handleKeyDown);
+    return () => window.removeEventListener('keydown', handleKeyDown);
+  }, [isAudioPlaying]);
+
+  // Cleanup on unmount
+  useEffect(() => {
+    return () => {
+      stopAudio();
+    };
+  }, []);
+
   // Function to play audio from base64
   const playAudio = (audioBase64: string) => {
     try {
-      const audioBlob = base64ToBlob(audioBase64, 'audio/ogg; codecs=opus');
+      // Stop any currently playing audio first
+      stopAudio();
+
+      const audioBlob = base64ToBlob(audioBase64, 'audio/mp3');
       const audioUrl = URL.createObjectURL(audioBlob);
+      setCurrentAudioUrl(audioUrl);
 
       if (audioRef.current) {
         audioRef.current.pause();
@@ -41,16 +83,30 @@ const App: React.FC = () => {
         audioRef.current = new Audio(audioUrl);
       }
 
-      audioRef.current.play().catch(error => {
-        console.error('Error playing audio:', error);
-      });
+      audioRef.current.play()
+        .then(() => {
+          setIsAudioPlaying(true);
+        })
+        .catch(error => {
+          console.error('Error playing audio:', error);
+          stopAudio(); // Clean up on error
+        });
 
-      // Clean up URL after playing
+      // Handle audio end
       audioRef.current.onended = () => {
         URL.revokeObjectURL(audioUrl);
+        setCurrentAudioUrl(null);
+        setIsAudioPlaying(false);
+      };
+
+      // Handle audio errors
+      audioRef.current.onerror = () => {
+        console.error('Audio playback error');
+        stopAudio();
       };
     } catch (error) {
       console.error('Error creating audio:', error);
+      stopAudio();
     }
   };
 
@@ -166,7 +222,19 @@ const App: React.FC = () => {
             </h1>
           </div>
 
-          <Avatar sentiment={sentiment} />
+          <Avatar sentiment={sentiment} isAudioPlaying={isAudioPlaying} />
+
+          {/* Audio Stop Button */}
+          {isAudioPlaying && (
+            <button
+              onClick={stopAudio}
+              className="mx-auto flex items-center gap-2 px-4 py-2 bg-red-500 hover:bg-red-600 text-white rounded-full shadow-lg transition-all duration-200 transform hover:scale-105 active:scale-95 animate-pulse"
+              aria-label="Stop audio playback"
+            >
+              <Square className="w-4 h-4" fill="currentColor" />
+              <span className="text-sm font-medium">Stop Speaking</span>
+            </button>
+          )}
 
           <div className="mt-8 px-6 py-4 bg-warm-50 rounded-xl border border-lavender-100 text-center">
             <p className="text-sm text-gray-600 italic">

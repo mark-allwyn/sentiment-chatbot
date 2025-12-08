@@ -3,9 +3,10 @@ import { SentimentState } from '../types';
 
 interface AvatarProps {
   sentiment: SentimentState;
+  isAudioPlaying?: boolean;
 }
 
-const Avatar: React.FC<AvatarProps> = ({ sentiment }) => {
+const Avatar: React.FC<AvatarProps> = ({ sentiment, isAudioPlaying = false }) => {
   const getColor = () => {
     switch (sentiment) {
       case SentimentState.POSITIVE:
@@ -33,7 +34,9 @@ const Avatar: React.FC<AvatarProps> = ({ sentiment }) => {
   const color = getColor();
 
   return (
-    <div className="relative w-48 h-48 mx-auto transition-all duration-500 ease-in-out transform hover:scale-105">
+    <div className={`relative w-48 h-48 mx-auto transition-all duration-500 ease-in-out transform hover:scale-105 ${
+      isAudioPlaying ? 'animate-pulse' : ''
+    }`}>
       <svg viewBox="0 0 200 200" className="w-full h-full drop-shadow-lg">
         <circle
           cx="100"
