@@ -27,16 +27,12 @@ app.add_middleware(
 # Initialize OpenAI client
 client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
 
-# Initialize Faster-Whisper model (use base model for balance of speed/accuracy)
-# Use GPU if available, otherwise CPU with int8 quantization for speed
+# Initialize Faster-Whisper model (use tiny model for speed)
 import subprocess
-try:
-    subprocess.run(["nvidia-smi"], capture_output=True, check=True)
-    whisper_model = WhisperModel("base", device="cuda", compute_type="float16")
-    print("Whisper model loaded on GPU (CUDA)")
-except:
-    whisper_model = WhisperModel("base", device="cpu", compute_type="int8")
-    print("Whisper model loaded on CPU (int8)")
+import time
+
+whisper_model = WhisperModel("tiny", device="cpu", compute_type="int8")
+print("Whisper model loaded: tiny model on CPU (int8) - optimized for speed")
 
 # Store conversation history per session (in production, use proper session management)
 conversations = {}
@@ -139,6 +135,7 @@ async def voice_chat(
 ):
     try:
         # Step 1: Transcribe audio to text using Faster-Whisper (local)
+        start_time = time.time()
         audio_content = await audio.read()
         print(f"Received audio: {len(audio_content)} bytes")
 
@@ -156,18 +153,20 @@ async def voice_chat(
         try:
             # Convert webm to wav using ffmpeg
             try:
+                ffmpeg_start = time.time()
                 convert_result = subprocess.run(
                     ["ffmpeg", "-i", temp_audio_path, "-ar", "16000", "-ac", "1", "-c:a", "pcm_s16le", temp_wav_path, "-y"],
                     capture_output=True,
                     check=True
                 )
-                print(f"Audio converted to WAV: {temp_wav_path}")
+                print(f"Audio converted to WAV: {temp_wav_path} (took {time.time() - ffmpeg_start:.2f}s)")
             except subprocess.CalledProcessError as e:
                 print(f"FFmpeg conversion failed: {e}")
                 print(f"FFmpeg stderr: {e.stderr.decode() if e.stderr else 'No stderr'}")
                 raise ValueError(f"Failed to convert audio file: {e}")
 
             # Transcribe with Faster-Whisper using the WAV file
+            transcribe_start = time.time()
             segments, info = whisper_model.transcribe(
                 temp_wav_path,
                 language="en",
@@ -175,7 +174,7 @@ async def voice_chat(
                 vad_filter=True  # Remove silence
             )
             user_text = " ".join([segment.text for segment in segments]).strip()
-            print(f"Transcription (Faster-Whisper): '{user_text}'")
+            print(f"Transcription (Faster-Whisper): '{user_text}' (took {time.time() - transcribe_start:.2f}s)")
 
             # If transcription is empty, return an error
             if not user_text:
@@ -200,12 +199,14 @@ async def voice_chat(
         })
 
         # Step 4: Call OpenAI API for chat response
+        gpt_start = time.time()
         response = client.chat.completions.create(
             model="gpt-4o-mini",
             messages=conversations[session_id],
             response_format={"type": "json_object"},
             temperature=0.7,
         )
+        print(f"GPT-4o-mini response (took {time.time() - gpt_start:.2f}s)")
 
         # Step 5: Parse response
         assistant_message = response.choices[0].message.content
@@ -229,6 +230,7 @@ async def voice_chat(
 
         try:
             # Edge-TTS is async, so we need to run it in the event loop
+            tts_start = time.time()
             communicate = edge_tts.Communicate(reply_text, edge_voice)
             await communicate.save(temp_tts_path)
 
@@ -237,7 +239,8 @@ async def voice_chat(
                 audio_bytes = audio_file.read()
 
             audio_base64 = base64.b64encode(audio_bytes).decode('utf-8')
-            print(f"TTS generated: {len(audio_bytes)} bytes")
+            print(f"TTS generated: {len(audio_bytes)} bytes (took {time.time() - tts_start:.2f}s)")
+            print(f"Total voice chat time: {time.time() - start_time:.2f}s")
         finally:
             # Clean up temp file
             os.unlink(temp_tts_path)
