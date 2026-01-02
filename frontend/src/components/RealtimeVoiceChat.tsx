@@ -49,7 +49,7 @@ export const RealtimeVoiceChat: React.FC<RealtimeVoiceChatProps> = ({
   const playAudio = async (base64Audio: string) => {
     try {
       if (!audioContextRef.current) {
-        audioContextRef.current = new AudioContext({ sampleRate: 24000 });
+        audioContextRef.current = new AudioContext();
       }
 
       // Decode base64 to Int16Array
@@ -104,6 +104,7 @@ export const RealtimeVoiceChat: React.FC<RealtimeVoiceChatProps> = ({
     // Play
     const source = audioContextRef.current.createBufferSource();
     source.buffer = audioBuffer;
+    source.playbackRate.value = 1.05; // Speed up playback to 1.05x (very subtle increase)
     source.connect(audioContextRef.current.destination);
 
     source.onended = () => {

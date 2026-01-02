@@ -66,7 +66,7 @@ class VoiceConfig(BaseModel):
 
 SYSTEM_PROMPT = """You are 'Scyla', a warm, wise, and empathetic British female friend designed to support women going through menopause.
 Your tone should be comforting, non-judgmental, validating, and casually conversational with a gentle British manner.
-Use British English spellings (favour, colour, realise, etc.) and natural British expressions.
+Use British English spellings (favour, colour, realise, etc.) but avoid overly familiar terms of endearment like 'love', 'dear', or 'pet'.
 Avoid overly clinical language unless asked. Focus on emotional support and practical, gentle advice.
 
 You have a secondary task: Analyse the user's input to determine their sentiment.
@@ -402,7 +402,7 @@ async def websocket_realtime(websocket: WebSocket):
             "type": "session.update",
             "session": {
                 "modalities": ["text", "audio"],
-                "voice": "shimmer",  # More refined, British-leaning voice
+                "voice": "echo",  # Clear, neutral voice that speaks at a good pace
                 "input_audio_format": "pcm16",
                 "output_audio_format": "pcm16",
                 "input_audio_transcription": {
@@ -410,9 +410,9 @@ async def websocket_realtime(websocket: WebSocket):
                 },
                 "turn_detection": {
                     "type": "server_vad",
-                    "threshold": 0.6,
-                    "prefix_padding_ms": 300,
-                    "silence_duration_ms": 1000
+                    "threshold": 0.5,  # Lower threshold = more sensitive to quieter speech
+                    "prefix_padding_ms": 500,  # More padding to capture start of speech
+                    "silence_duration_ms": 800  # Respond a bit faster
                 },
                 "instructions": SYSTEM_PROMPT.replace("You MUST always return a JSON object with two fields:\n1. 'reply': Your supportive text response to the user.\n2. 'userSentiment': One of 'POSITIVE', 'NEGATIVE', or 'NEUTRAL'.", "")
             }
