@@ -2,8 +2,8 @@ import React, { useState, useRef, useEffect } from 'react';
 import { Send, Square } from 'lucide-react';
 import Avatar from './components/Avatar';
 import { TypingIndicator } from './components/TypingIndicator';
-import { VoiceRecorder } from './components/VoiceRecorder';
-import { sendMessage, sendVoiceMessage } from './services/api';
+import { RealtimeVoiceChat } from './components/RealtimeVoiceChat';
+import { sendMessage } from './services/api';
 import { ChatMessage, SentimentState } from './types';
 
 const App: React.FC = () => {
@@ -163,48 +163,40 @@ const App: React.FC = () => {
     }
   };
 
-  const handleVoiceMessage = async (audioBlob: Blob) => {
-    if (isLoading) return;
+  const handleTranscript = (text: string, role: 'user' | 'assistant') => {
+    const message: ChatMessage = {
+      id: Date.now().toString(),
+      role: role === 'user' ? 'user' : 'model',
+      text: text
+    };
+    setMessages(prev => [...prev, message]);
+  };
 
-    setIsLoading(true);
+  const handleAISpeakingChange = (isSpeaking: boolean) => {
+    setIsAudioPlaying(isSpeaking);
+  };
 
-    try {
-      const response = await sendVoiceMessage(audioBlob);
+  const handleSentimentChange = (sentimentStr: string) => {
+    console.log('🎨 handleSentimentChange called with:', sentimentStr);
+    const sentimentMap: { [key: string]: SentimentState } = {
+      'POSITIVE': SentimentState.POSITIVE,
+      'NEGATIVE': SentimentState.NEGATIVE,
+      'NEUTRAL': SentimentState.NEUTRAL
+    };
+    const newSentiment = sentimentMap[sentimentStr] || SentimentState.NEUTRAL;
+    console.log('🎨 Setting sentiment to:', newSentiment);
+    console.log('🎨 Current sentiment before update:', sentiment);
+    setSentiment(newSentiment);
+  };
 
-      // Add user's transcribed message
-      const userMessage: ChatMessage = {
-        id: Date.now().toString(),
-        role: 'user',
-        text: response.transcription
-      };
-      setMessages(prev => [...prev, userMessage]);
-
-      // Update sentiment
-      const detectedSentiment = response.userSentiment as SentimentState;
-      setSentiment(detectedSentiment);
-
-      // Add model's response
-      const modelMessage: ChatMessage = {
-        id: (Date.now() + 1).toString(),
-        role: 'model',
-        text: response.reply
-      };
-      setMessages(prev => [...prev, modelMessage]);
-
-      // Auto-play voice response
-      playAudio(response.audioBase64);
-
-    } catch (error) {
-      console.error("Failed to send voice message", error);
-      const errorMessage: ChatMessage = {
-        id: (Date.now() + 1).toString(),
-        role: 'model',
-        text: "I'm having trouble with voice right now, but I'm still here for you. Can you try again?"
-      };
-      setMessages(prev => [...prev, errorMessage]);
-    } finally {
-      setIsLoading(false);
-    }
+  const printTranscript = () => {
+    console.log('=== CONVERSATION TRANSCRIPT ===');
+    messages.forEach((msg, index) => {
+      const role = msg.role === 'user' ? 'USER' : 'SCYLA';
+      console.log(`[${index + 1}] ${role}: ${msg.text}`);
+    });
+    console.log('=== END TRANSCRIPT ===');
+    alert('Transcript printed to browser console (F12)');
   };
 
 
@@ -243,6 +235,15 @@ const App: React.FC = () => {
               {sentiment === SentimentState.NEUTRAL && "I'm listening. Tell me more."}
             </p>
           </div>
+
+          {messages.length > 1 && (
+            <button
+              onClick={printTranscript}
+              className="mt-4 px-4 py-2 bg-lavender-500 hover:bg-lavender-600 text-white rounded-lg shadow-md transition-all duration-200 transform hover:scale-105 active:scale-95 text-sm font-medium"
+            >
+              Print Transcript
+            </button>
+          )}
         </div>
       </div>
 
@@ -279,15 +280,17 @@ const App: React.FC = () => {
             onSubmit={handleSendMessage}
             className="flex items-center gap-3 bg-warm-50 p-2 pr-2 rounded-full border border-lavender-200 focus-within:ring-2 focus-within:ring-lavender-300 focus-within:border-transparent transition-all shadow-sm"
           >
-            <VoiceRecorder
-              onRecordingComplete={handleVoiceMessage}
+            <RealtimeVoiceChat
+              onTranscript={handleTranscript}
+              onAISpeakingChange={handleAISpeakingChange}
+              onSentimentChange={handleSentimentChange}
               disabled={isLoading}
             />
             <input
               type="text"
               value={inputValue}
               onChange={(e) => setInputValue(e.target.value)}
-              placeholder="Type a message or use voice..."
+              placeholder="Type a message or start real-time conversation..."
               disabled={isLoading}
               className="flex-1 bg-transparent px-4 py-3 outline-none text-gray-700 placeholder-gray-400"
             />
