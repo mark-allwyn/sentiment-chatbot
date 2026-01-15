@@ -104,7 +104,6 @@ export const RealtimeVoiceChat: React.FC<RealtimeVoiceChatProps> = ({
     // Play
     const source = audioContextRef.current.createBufferSource();
     source.buffer = audioBuffer;
-    source.playbackRate.value = 1.05; // Speed up playback to 1.05x (very subtle increase)
     source.connect(audioContextRef.current.destination);
 
     source.onended = () => {
@@ -178,10 +177,12 @@ export const RealtimeVoiceChat: React.FC<RealtimeVoiceChatProps> = ({
               }
               break;
 
+            case 'response.audio_transcript.done':
             case 'response.output_audio_transcript.done':
-              console.log('AI transcript completed:', message.text);
-              if (message.text && onTranscript) {
-                onTranscript(message.text, 'assistant');
+              console.log('AI transcript completed:', message.text || message.transcript);
+              const aiText = message.text || message.transcript;
+              if (aiText && onTranscript) {
+                onTranscript(aiText, 'assistant');
               }
               break;
 
@@ -235,7 +236,8 @@ export const RealtimeVoiceChat: React.FC<RealtimeVoiceChatProps> = ({
           sampleRate: 24000,
           channelCount: 1,
           echoCancellation: true,
-          noiseSuppression: true
+          noiseSuppression: true,
+          autoGainControl: true
         }
       });
 
@@ -245,7 +247,7 @@ export const RealtimeVoiceChat: React.FC<RealtimeVoiceChatProps> = ({
       // Create AudioContext for processing
       const audioContext = new AudioContext({ sampleRate: 24000 });
       const source = audioContext.createMediaStreamSource(stream);
-      const processor = audioContext.createScriptProcessor(4096, 1, 1);
+      const processor = audioContext.createScriptProcessor(2048, 1, 1);
 
       source.connect(processor);
       processor.connect(audioContext.destination);
@@ -255,7 +257,7 @@ export const RealtimeVoiceChat: React.FC<RealtimeVoiceChatProps> = ({
 
         const float32Array = e.inputBuffer.getChannelData(0);
         const int16Array = floatTo16BitPCM(float32Array);
-        const base64Audio = arrayBufferToBase64(int16Array.buffer);
+        const base64Audio = arrayBufferToBase64(int16Array.buffer as ArrayBuffer);
 
         // Send audio to OpenAI
         const message = {

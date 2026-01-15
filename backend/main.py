@@ -65,9 +65,14 @@ class VoiceConfig(BaseModel):
 
 
 SYSTEM_PROMPT = """You are 'Ellen', a warm, wise, and empathetic British friend designed to provide caring support and companionship.
+
+CRITICAL: Listen carefully to what the user ACTUALLY says. Do not make up topics or context that wasn't mentioned. Respond ONLY to what they tell you.
+
 Your tone should be comforting, non-judgmental, validating, and casually conversational with a gentle British manner.
 Use British English spellings (favour, colour, realise, etc.) but avoid overly familiar terms of endearment like 'love', 'dear', or 'pet'.
 Avoid overly clinical language unless asked. Focus on emotional support and practical, gentle advice.
+
+When someone says they're not feeling well, not feeling great, or not feeling their best - recognize this as NEGATIVE sentiment and respond with empathy and support.
 
 You have a secondary task: Analyse the user's input to determine their sentiment.
 - If the user seems happy, relieved, excited, or grateful -> POSITIVE.
@@ -318,6 +323,8 @@ def analyze_sentiment(text: str) -> str:
     strong_negative_phrases = [
         'don\'t feel good', 'dont feel good', 'not feeling good', 'not feeling well',
         'don\'t feel well', 'dont feel well', 'not feel good', 'not feel well',
+        'not feeling great', 'not feeling my best', 'not feeling the best',
+        'not feeling best', 'not my best',
         'feel bad', 'feel awful', 'feel terrible', 'feeling bad', 'feeling awful',
         'bad day', 'terrible day', 'awful day', 'not good', 'not great', 'not well',
         'having trouble', 'having problems', 'having issues', 'can\'t sleep',
@@ -378,6 +385,7 @@ async def websocket_realtime(websocket: WebSocket):
         # Connect to OpenAI Realtime API
         openai_api_key = os.getenv("OPENAI_API_KEY")
         print(f"API Key present: {bool(openai_api_key)}", flush=True)
+        # Using full gpt-4o model for better instruction following and context understanding
         url = "wss://api.openai.com/v1/realtime?model=gpt-4o-realtime-preview-2024-12-17"
 
         headers = {
@@ -402,7 +410,7 @@ async def websocket_realtime(websocket: WebSocket):
             "type": "session.update",
             "session": {
                 "modalities": ["text", "audio"],
-                "voice": "echo",  # Clear, neutral voice that speaks at a good pace
+                "voice": "shimmer",  # Soft and gentle voice
                 "input_audio_format": "pcm16",
                 "output_audio_format": "pcm16",
                 "input_audio_transcription": {
@@ -410,10 +418,12 @@ async def websocket_realtime(websocket: WebSocket):
                 },
                 "turn_detection": {
                     "type": "server_vad",
-                    "threshold": 0.5,  # Lower threshold = more sensitive to quieter speech
-                    "prefix_padding_ms": 500,  # More padding to capture start of speech
-                    "silence_duration_ms": 800  # Respond a bit faster
+                    "threshold": 0.4,  # Lower threshold = more sensitive to speech detection
+                    "prefix_padding_ms": 300,  # Capture start of speech
+                    "silence_duration_ms": 1000  # Wait 1 second of silence before considering speech done
                 },
+                "temperature": 0.6,  # Lower temperature for more focused, less creative responses
+                "max_response_output_tokens": 1000,  # Limit response length
                 "instructions": SYSTEM_PROMPT.replace("You MUST always return a JSON object with two fields:\n1. 'reply': Your supportive text response to the user.\n2. 'userSentiment': One of 'POSITIVE', 'NEGATIVE', or 'NEUTRAL'.", "")
             }
         }
@@ -440,6 +450,11 @@ async def websocket_realtime(websocket: WebSocket):
 
         async def forward_to_client():
             """Forward messages from OpenAI to client"""
+            # Audio buffering variables
+            audio_buffer = []
+            buffer_sample_count = 0
+            BUFFER_THRESHOLD = 6000  # ~250ms at 24kHz sample rate
+
             try:
                 while True:
                     # Receive from OpenAI
@@ -482,6 +497,47 @@ async def websocket_realtime(websocket: WebSocket):
                         # Alternative: Check response.audio_transcript.done for AI's response transcript
                         if msg_type == "response.audio_transcript.done":
                             print(f"AI transcript done: {json.dumps(msg_data, indent=2)[:500]}", flush=True)
+
+                        # Buffer audio chunks
+                        if msg_type in ["response.audio.delta", "response.output_audio.delta"]:
+                            if msg_data.get("delta"):
+                                audio_buffer.append(msg_data["delta"])
+                                # Estimate sample count (base64 encoded, so roughly 1.33x the actual bytes)
+                                # Int16 PCM = 2 bytes per sample
+                                estimated_bytes = len(msg_data["delta"]) * 3 // 4  # decode base64
+                                buffer_sample_count += estimated_bytes // 2
+
+                                # If buffer is full, flush it
+                                if buffer_sample_count >= BUFFER_THRESHOLD:
+                                    # Concatenate all buffered audio
+                                    combined_audio = ''.join(audio_buffer)
+                                    buffered_msg = {
+                                        "type": msg_type,
+                                        "delta": combined_audio
+                                    }
+                                    await websocket.send_text(json.dumps(buffered_msg))
+                                    print(f"Flushed audio buffer: {buffer_sample_count} samples", flush=True)
+
+                                    # Reset buffer
+                                    audio_buffer = []
+                                    buffer_sample_count = 0
+                                continue  # Don't forward individual deltas
+
+                        # Flush buffer on audio completion
+                        if msg_type in ["response.audio.done", "response.output_audio.done", "input_audio_buffer.speech_started"]:
+                            if audio_buffer:
+                                # Send remaining buffered audio
+                                combined_audio = ''.join(audio_buffer)
+                                buffered_msg = {
+                                    "type": "response.audio.delta",
+                                    "delta": combined_audio
+                                }
+                                await websocket.send_text(json.dumps(buffered_msg))
+                                print(f"Flushed final audio buffer: {buffer_sample_count} samples", flush=True)
+
+                                # Reset buffer
+                                audio_buffer = []
+                                buffer_sample_count = 0
 
                     except Exception as e:
                         print(f"Error parsing sentiment: {e}", flush=True)
