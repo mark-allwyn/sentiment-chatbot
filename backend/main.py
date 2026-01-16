@@ -1,14 +1,10 @@
-from fastapi import FastAPI, HTTPException, UploadFile, File, Form, BackgroundTasks, WebSocket, WebSocketDisconnect
+from fastapi import FastAPI, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
-from pydantic import BaseModel
-from openai import OpenAI
 from dotenv import load_dotenv
 import os
 import json
 import base64
-import tempfile
 import asyncio
-import websockets
 from google import genai
 
 # Load environment variables
@@ -25,48 +21,10 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# Initialize OpenAI client (for legacy endpoints)
-client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
-
 # Initialize Gemini client for Live API
 gemini_client = genai.Client(api_key=os.getenv("GOOGLE_API_KEY"))
 
-print("OpenAI client initialized - using gpt-4o-mini-transcribe-2025-12-15 for transcription, gpt-4o-mini for chat, and tts-1 for speech")
 print("Gemini client initialized - using Gemini 2.0 Flash for real-time audio")
-
-# Store conversation history per session (in production, use proper session management)
-conversations = {}
-
-# Store voice preferences per session
-voice_preferences = {}
-
-
-class ChatMessage(BaseModel):
-    message: str
-    session_id: str = "default"
-
-
-class ChatResponse(BaseModel):
-    reply: str
-    userSentiment: str
-
-
-class VoiceChatResponse(BaseModel):
-    reply: str
-    userSentiment: str
-    transcription: str
-    audioBase64: str
-
-
-class QuickVoiceResponse(BaseModel):
-    reply: str
-    userSentiment: str
-    transcription: str
-
-
-class VoiceConfig(BaseModel):
-    voice: str  # OpenAI voices: "alloy", "echo", "fable", "onyx", "nova", "shimmer"
-    session_id: str = "default"
 
 
 SYSTEM_PROMPT = """You are 'Ellen', a warm, wise, and empathetic British friend designed to provide caring support and companionship.
@@ -79,220 +37,12 @@ Avoid overly clinical language unless asked. Focus on emotional support and prac
 
 When someone says they're not feeling well, not feeling great, or not feeling their best - recognize this as NEGATIVE sentiment and respond with empathy and support.
 
-You have a secondary task: Analyse the user's input to determine their sentiment.
-- If the user seems happy, relieved, excited, or grateful -> POSITIVE.
-- If the user seems sad, frustrated, angry, anxious, or in pain -> NEGATIVE.
-- If the user is just asking information, saying hello, or is matter-of-fact -> NEUTRAL.
-
-You MUST always return a JSON object with two fields:
-1. 'reply': Your supportive text response to the user.
-2. 'userSentiment': One of 'POSITIVE', 'NEGATIVE', or 'NEUTRAL'."""
+IMPORTANT: The user speaks English. Always interpret their speech as English."""
 
 
 @app.get("/")
 async def root():
     return {"message": "Ellen API is running"}
-
-
-@app.post("/api/chat", response_model=ChatResponse)
-async def chat(chat_message: ChatMessage):
-    try:
-        # Get or create conversation history for this session
-        if chat_message.session_id not in conversations:
-            conversations[chat_message.session_id] = [
-                {"role": "system", "content": SYSTEM_PROMPT}
-            ]
-
-        # Add user message to conversation
-        conversations[chat_message.session_id].append({
-            "role": "user",
-            "content": chat_message.message
-        })
-
-        # Call OpenAI API (using gpt-4o-mini for better quality and speed)
-        response = client.chat.completions.create(
-            model="gpt-4o-mini",
-            messages=conversations[chat_message.session_id],
-            response_format={"type": "json_object"},
-            temperature=0.7,
-        )
-
-        # Parse response
-        assistant_message = response.choices[0].message.content
-        response_data = json.loads(assistant_message)
-
-        # Add assistant response to conversation history
-        conversations[chat_message.session_id].append({
-            "role": "assistant",
-            "content": assistant_message
-        })
-
-        return ChatResponse(
-            reply=response_data.get("reply", "I'm here for you."),
-            userSentiment=response_data.get("userSentiment", "NEUTRAL")
-        )
-
-    except Exception as e:
-        print(f"Error: {str(e)}")
-        raise HTTPException(
-            status_code=500,
-            detail="I'm having a little trouble connecting right now, but I'm still here for you."
-        )
-
-
-@app.post("/api/voice-chat", response_model=VoiceChatResponse)
-async def voice_chat(
-    audio: UploadFile = File(...),
-    session_id: str = Form("default")
-):
-    try:
-        import time
-        import subprocess
-
-        # Step 1: Transcribe audio to text using OpenAI gpt-4o-mini-transcribe
-        start_time = time.time()
-        audio_content = await audio.read()
-        print(f"Received audio: {len(audio_content)} bytes")
-
-        # Check if audio is too small (likely empty or corrupt)
-        if len(audio_content) < 1000:
-            raise ValueError("Audio file is too small - please record for at least 1 second")
-
-        # Save audio to temporary file
-        with tempfile.NamedTemporaryFile(delete=False, suffix=".webm") as temp_audio:
-            temp_audio.write(audio_content)
-            temp_audio_path = temp_audio.name
-
-        # Convert webm to mp3 for better OpenAI compatibility
-        with tempfile.NamedTemporaryFile(delete=False, suffix=".mp3") as temp_mp3:
-            temp_mp3_path = temp_mp3.name
-
-        print(f"Temp audio file: {temp_audio_path}")
-
-        try:
-            # Convert webm to mp3 using ffmpeg with faster settings
-            try:
-                convert_result = subprocess.run(
-                    ["ffmpeg", "-i", temp_audio_path, "-ar", "16000", "-ac", "1", "-b:a", "32k", "-q:a", "9", temp_mp3_path, "-y"],
-                    capture_output=True,
-                    check=True
-                )
-                print(f"Audio converted to MP3: {temp_mp3_path}")
-            except subprocess.CalledProcessError as e:
-                print(f"FFmpeg conversion failed: {e}")
-                raise ValueError(f"Failed to convert audio file: {e}")
-
-            # Transcribe with OpenAI gpt-4o-mini-transcribe (90% fewer hallucinations)
-            transcribe_start = time.time()
-            with open(temp_mp3_path, "rb") as audio_file:
-                transcription = client.audio.transcriptions.create(
-                    model="gpt-4o-mini-transcribe-2025-12-15",
-                    file=audio_file,
-                    response_format="json"
-                )
-            user_text = transcription.text.strip()
-            print(f"Transcription (gpt-4o-mini-transcribe): '{user_text}' (took {time.time() - transcribe_start:.2f}s)")
-
-            # If transcription is empty, return an error
-            if not user_text:
-                raise ValueError("No speech detected in audio")
-        finally:
-            # Clean up temp files
-            if os.path.exists(temp_audio_path):
-                os.unlink(temp_audio_path)
-            if os.path.exists(temp_mp3_path):
-                os.unlink(temp_mp3_path)
-
-        # Step 2: Get or create conversation history for this session
-        if session_id not in conversations:
-            conversations[session_id] = [
-                {"role": "system", "content": SYSTEM_PROMPT}
-            ]
-
-        # Step 3: Add user message to conversation
-        conversations[session_id].append({
-            "role": "user",
-            "content": user_text
-        })
-
-        # Step 4: Call OpenAI API for chat response (using gpt-4o-mini for better quality)
-        gpt_start = time.time()
-        response = client.chat.completions.create(
-            model="gpt-4o-mini",
-            messages=conversations[session_id],
-            response_format={"type": "json_object"},
-            temperature=0.7,
-        )
-        print(f"gpt-4o-mini response (took {time.time() - gpt_start:.2f}s)")
-
-        # Step 5: Parse response
-        assistant_message = response.choices[0].message.content
-        response_data = json.loads(assistant_message)
-        reply_text = response_data.get("reply", "I'm here for you.")
-        sentiment = response_data.get("userSentiment", "NEUTRAL")
-
-        # Step 6: Add assistant response to conversation history
-        conversations[session_id].append({
-            "role": "assistant",
-            "content": assistant_message
-        })
-
-        # Step 7: Generate voice response using OpenAI TTS
-        # Get user's preferred voice (default: fable for British-leaning tone)
-        preferred_voice = voice_preferences.get(session_id, "fable")
-
-        # Generate speech with OpenAI TTS
-        # Note: Using tts-1 (optimized for speed) with speed parameter for faster generation
-        tts_start = time.time()
-        response_audio = client.audio.speech.create(
-            model="tts-1",
-            voice=preferred_voice,
-            input=reply_text,
-            speed=1.1  # Slightly faster speech for quicker responses
-        )
-
-        # Get audio bytes
-        audio_bytes = response_audio.content
-        audio_base64 = base64.b64encode(audio_bytes).decode('utf-8')
-        print(f"TTS generated: {len(audio_bytes)} bytes (took {time.time() - tts_start:.2f}s)")
-        print(f"Total voice chat time: {time.time() - start_time:.2f}s")
-
-        return VoiceChatResponse(
-            reply=reply_text,
-            userSentiment=sentiment,
-            transcription=user_text,
-            audioBase64=audio_base64
-        )
-
-    except Exception as e:
-        print(f"Voice chat error: {str(e)}")
-        raise HTTPException(
-            status_code=500,
-            detail="I'm having trouble with voice right now, but I'm still here for you."
-        )
-
-
-@app.post("/api/voice-config")
-async def set_voice_config(config: VoiceConfig):
-    """Set voice preference for a session"""
-    # OpenAI TTS voices: alloy, echo, fable, onyx, nova, shimmer
-    valid_voices = ["alloy", "echo", "fable", "onyx", "nova", "shimmer"]
-    if config.voice not in valid_voices:
-        raise HTTPException(
-            status_code=400,
-            detail=f"Voice must be one of: {', '.join(valid_voices)}"
-        )
-
-    voice_preferences[config.session_id] = config.voice
-    return {"message": f"Voice set to {config.voice}", "voice": config.voice}
-
-
-@app.get("/api/voice-config/{session_id}")
-async def get_voice_config(session_id: str = "default"):
-    """Get voice preference for a session"""
-    # Using 'fable' as default for British-leaning voice
-    voice = voice_preferences.get(session_id, "fable")
-    return {"voice": voice}
 
 
 def analyze_sentiment(text: str) -> str:
@@ -350,7 +100,6 @@ def analyze_sentiment(text: str) -> str:
         'feel better', 'feeling better', 'feel great', 'feeling great',
         'feel wonderful', 'feeling wonderful', 'feel amazing', 'feeling amazing',
         'so happy', 'very happy', 'really happy', 'feeling good'
-        # NOTE: removed 'feel good' because it conflicts with "don't feel good"
     ]
 
     # Check for strong negative phrases FIRST (to catch negations like "don't feel good")
@@ -396,25 +145,22 @@ async def websocket_realtime(websocket: WebSocket):
 
     try:
         # Prepare system instructions for Gemini
-        system_instruction = SYSTEM_PROMPT.replace(
-            "You MUST always return a JSON object with two fields:\n1. 'reply': Your supportive text response to the user.\n2. 'userSentiment': One of 'POSITIVE', 'NEGATIVE', or 'NEUTRAL'.",
-            ""
-        )
+        system_instruction = SYSTEM_PROMPT
 
         print("Connecting to Gemini Live API...", flush=True)
         sys.stdout.flush()
 
-        # Connect to Gemini Live API - updated config format
+        # Connect to Gemini Live API
         config = types.LiveConnectConfig(
             response_modalities=["AUDIO"],
             speech_config=types.SpeechConfig(
                 voice_config=types.VoiceConfig(
-                    prebuilt_voice_config=types.PrebuiltVoiceConfig(voice_name="Puck")
+                    prebuilt_voice_config=types.PrebuiltVoiceConfig(voice_name="Aoede")
                 )
             ),
             output_audio_transcription=types.AudioTranscriptionConfig(),
             input_audio_transcription=types.AudioTranscriptionConfig(),
-            system_instruction=system_instruction + "\n\nIMPORTANT: The user speaks English. Always interpret their speech as English."
+            system_instruction=system_instruction
         )
 
         async with gemini_client.aio.live.connect(model="models/gemini-2.0-flash-exp", config=config) as session:
@@ -426,9 +172,8 @@ async def websocket_realtime(websocket: WebSocket):
             buffer_sample_count = 0
             BUFFER_THRESHOLD = 6000  # ~250ms at 24kHz sample rate
 
-            # Create tasks to handle bidirectional communication
             # Track turn state
-            turn_count = [0]  # Using list to allow modification in nested function
+            turn_count = [0]
 
             async def forward_to_gemini():
                 """Forward audio from client to Gemini"""
@@ -463,13 +208,9 @@ async def websocket_realtime(websocket: WebSocket):
                                     print(f"❌ Error sending to Gemini: {send_err}", flush=True)
 
                         elif msg_type == "input_audio_buffer.commit":
-                            # User finished speaking - just log it
-                            # Gemini's VAD should detect the silence and respond automatically
                             print("🔚 Turn end detected - waiting for Gemini's VAD to trigger response", flush=True)
 
                         elif msg_type == "response.cancel":
-                            # User interrupted - we don't need to do anything special
-                            # Gemini handles interruptions automatically
                             print("User interrupted AI response", flush=True)
 
                 except WebSocketDisconnect:
@@ -493,6 +234,7 @@ async def websocket_realtime(websocket: WebSocket):
                 ai_transcript_parts = []
                 user_transcript_parts = []
                 user_transcript_sent = [False]  # Track if we've sent the user transcript for this turn
+                speech_started_sent = [False]  # Track if we've notified frontend about user speaking
 
                 async def safe_send(msg):
                     """Send message only if WebSocket is still open"""
@@ -582,6 +324,14 @@ async def websocket_realtime(websocket: WebSocket):
 
                             # Handle user speech transcription - accumulate chunks
                             if response.server_content and response.server_content.input_transcription:
+                                # Only send interrupt signal if AI is currently responding (user_transcript already sent)
+                                # This means user is interrupting the AI, not just speaking for the first time
+                                if user_transcript_sent[0] and not speech_started_sent[0]:
+                                    speech_msg = {"type": "input_audio_buffer.speech_started"}
+                                    await safe_send(speech_msg)
+                                    speech_started_sent[0] = True
+                                    print("🎙️ User interrupting AI - sent interrupt signal", flush=True)
+
                                 user_transcript = response.server_content.input_transcription.text
                                 if user_transcript:
                                     user_transcript_parts.append(user_transcript)
@@ -622,6 +372,7 @@ async def websocket_realtime(websocket: WebSocket):
                                 # Reset user transcript state for next turn
                                 user_transcript_parts.clear()
                                 user_transcript_sent[0] = False
+                                speech_started_sent[0] = False
 
                                 # Send completion event
                                 done_msg = {
