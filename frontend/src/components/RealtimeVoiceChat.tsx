@@ -24,6 +24,8 @@ export const RealtimeVoiceChat: React.FC<RealtimeVoiceChatProps> = ({
   const audioContextRef = useRef<AudioContext | null>(null);
   const audioQueueRef = useRef<Int16Array[]>([]);
   const isPlayingRef = useRef(false);
+  const isSpeakingRef = useRef(false);
+  const silenceTimeoutRef = useRef<NodeJS.Timeout | null>(null);
 
   // Convert Float32Array to Int16Array (PCM16)
   const floatTo16BitPCM = (float32Array: Float32Array): Int16Array => {
@@ -122,6 +124,8 @@ export const RealtimeVoiceChat: React.FC<RealtimeVoiceChatProps> = ({
       ws.onopen = () => {
         console.log('WebSocket connected!');
         setIsConnected(true);
+        // Start recording once WebSocket is connected
+        startRecording();
       };
 
       ws.onmessage = (event) => {
@@ -192,7 +196,7 @@ export const RealtimeVoiceChat: React.FC<RealtimeVoiceChatProps> = ({
               break;
 
             case 'response.done':
-              console.log('Response complete');
+              console.log('✅ Response complete - ready for next voice input');
               break;
 
             case 'sentiment.update':
@@ -233,7 +237,7 @@ export const RealtimeVoiceChat: React.FC<RealtimeVoiceChatProps> = ({
     try {
       const stream = await navigator.mediaDevices.getUserMedia({
         audio: {
-          sampleRate: 24000,
+          sampleRate: 16000,  // Gemini requires 16kHz input
           channelCount: 1,
           echoCancellation: true,
           noiseSuppression: true,
@@ -245,7 +249,7 @@ export const RealtimeVoiceChat: React.FC<RealtimeVoiceChatProps> = ({
       console.log('Got media stream');
 
       // Create AudioContext for processing
-      const audioContext = new AudioContext({ sampleRate: 24000 });
+      const audioContext = new AudioContext({ sampleRate: 16000 });  // Gemini requires 16kHz input
       const source = audioContext.createMediaStreamSource(stream);
       const processor = audioContext.createScriptProcessor(2048, 1, 1);
 
@@ -253,19 +257,49 @@ export const RealtimeVoiceChat: React.FC<RealtimeVoiceChatProps> = ({
       processor.connect(audioContext.destination);
 
       processor.onaudioprocess = (e) => {
-        if (!wsRef.current || wsRef.current.readyState !== WebSocket.OPEN) return;
+        if (!wsRef.current || wsRef.current.readyState !== WebSocket.OPEN) {
+          // Log if WebSocket is not ready (but only occasionally to avoid spam)
+          if (Math.random() < 0.01) {
+            console.log('⚠️ WebSocket not ready, state:', wsRef.current?.readyState);
+          }
+          return;
+        }
 
         const float32Array = e.inputBuffer.getChannelData(0);
+
+        // Calculate volume level for VAD
+        let sum = 0;
+        for (let i = 0; i < float32Array.length; i++) {
+          sum += float32Array[i] * float32Array[i];
+        }
+        const rms = Math.sqrt(sum / float32Array.length);
+        const volume = Math.max(0, Math.min(1, rms * 10)); // Normalize to 0-1
+
+        // Voice Activity Detection threshold
+        const SPEECH_THRESHOLD = 0.01; // Adjust based on your environment
+        const SILENCE_DURATION = 1000; // 1 second of silence to consider turn complete
+
+        const isSpeaking = volume > SPEECH_THRESHOLD;
+
+        // Always send the actual audio (not zeros) - let Gemini's VAD handle speech detection
         const int16Array = floatTo16BitPCM(float32Array);
         const base64Audio = arrayBufferToBase64(int16Array.buffer as ArrayBuffer);
 
-        // Send audio to OpenAI
         const message = {
           type: 'input_audio_buffer.append',
           audio: base64Audio
         };
 
         wsRef.current.send(JSON.stringify(message));
+
+        // Track speaking state for UI feedback only
+        if (isSpeaking && !isSpeakingRef.current) {
+          console.log('🎤 Speech detected (volume:', volume.toFixed(3), ')');
+          isSpeakingRef.current = true;
+        } else if (!isSpeaking && isSpeakingRef.current) {
+          console.log('🤫 Silence detected');
+          isSpeakingRef.current = false;
+        }
       };
 
       setIsRecording(true);
@@ -282,6 +316,14 @@ export const RealtimeVoiceChat: React.FC<RealtimeVoiceChatProps> = ({
       streamRef.current.getTracks().forEach(track => track.stop());
       streamRef.current = null;
     }
+
+    // Clear silence timeout
+    if (silenceTimeoutRef.current) {
+      clearTimeout(silenceTimeoutRef.current);
+      silenceTimeoutRef.current = null;
+    }
+
+    isSpeakingRef.current = false;
     setIsRecording(false);
     console.log('Recording stopped');
   };
@@ -300,19 +342,9 @@ export const RealtimeVoiceChat: React.FC<RealtimeVoiceChatProps> = ({
       audioQueueRef.current = [];
       setIsConnected(false);
     } else {
-      // Connect
+      // Connect - recording will be started from ws.onopen callback
       console.log('Connecting to WebSocket...');
       await connectWebSocket();
-      // Wait a bit for connection to establish
-      setTimeout(() => {
-        console.log('Checking connection state:', wsRef.current?.readyState);
-        if (wsRef.current?.readyState === WebSocket.OPEN) {
-          console.log('Starting recording...');
-          startRecording();
-        } else {
-          console.log('WebSocket not ready, state:', wsRef.current?.readyState);
-        }
-      }, 500);
     }
   };
 

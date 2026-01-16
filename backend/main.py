@@ -9,6 +9,7 @@ import base64
 import tempfile
 import asyncio
 import websockets
+from google import genai
 
 # Load environment variables
 load_dotenv()
@@ -24,10 +25,14 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# Initialize OpenAI client
+# Initialize OpenAI client (for legacy endpoints)
 client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
 
+# Initialize Gemini client for Live API
+gemini_client = genai.Client(api_key=os.getenv("GOOGLE_API_KEY"))
+
 print("OpenAI client initialized - using gpt-4o-mini-transcribe-2025-12-15 for transcription, gpt-4o-mini for chat, and tts-1 for speech")
+print("Gemini client initialized - using Gemini 2.0 Flash for real-time audio")
 
 # Store conversation history per session (in production, use proper session management)
 conversations = {}
@@ -329,7 +334,15 @@ def analyze_sentiment(text: str) -> str:
         'bad day', 'terrible day', 'awful day', 'not good', 'not great', 'not well',
         'having trouble', 'having problems', 'having issues', 'can\'t sleep',
         'unable to sleep', 'sleep problem', 'sleep issue', 'waking up', 'night sweat',
-        'weight gain', 'weight loss', 'no energy', 'not happy'
+        'weight gain', 'weight loss', 'no energy', 'not happy',
+        # Physical pain phrases
+        'sore back', 'back pain', 'back hurts', 'my back', 'bad back', 'hurt my back',
+        'sore neck', 'neck pain', 'headache', 'migraine', 'in pain', 'feeling pain',
+        'hurts', 'aching', 'stiff', 'pulled a muscle', 'muscle pain',
+        # Illness phrases
+        'have a cold', 'got a cold', 'caught a cold', 'feeling sick', 'feel sick',
+        'under the weather', 'not well', 'unwell', 'flu', 'fever', 'cough',
+        'runny nose', 'blocked nose', 'stuffy', 'sneezing', 'sore throat'
     ]
 
     # Strong positive phrases (check AFTER negatives to avoid false positives)
@@ -373,188 +386,272 @@ def analyze_sentiment(text: str) -> str:
 
 @app.websocket("/ws/realtime")
 async def websocket_realtime(websocket: WebSocket):
-    """WebSocket endpoint for OpenAI Realtime API"""
+    """WebSocket endpoint for Gemini Live API"""
     import sys
+    from google.genai import types
+
     await websocket.accept()
     print("Client WebSocket accepted", flush=True)
     sys.stdout.flush()
 
-    openai_ws = None
-
     try:
-        # Connect to OpenAI Realtime API
-        openai_api_key = os.getenv("OPENAI_API_KEY")
-        print(f"API Key present: {bool(openai_api_key)}", flush=True)
-        # Using full gpt-4o model for better instruction following and context understanding
-        url = "wss://api.openai.com/v1/realtime?model=gpt-4o-realtime-preview-2024-12-17"
+        # Prepare system instructions for Gemini
+        system_instruction = SYSTEM_PROMPT.replace(
+            "You MUST always return a JSON object with two fields:\n1. 'reply': Your supportive text response to the user.\n2. 'userSentiment': One of 'POSITIVE', 'NEGATIVE', or 'NEUTRAL'.",
+            ""
+        )
 
-        headers = {
-            "Authorization": f"Bearer {openai_api_key}",
-            "OpenAI-Beta": "realtime=v1"
-        }
-
-        print("Connecting to OpenAI Realtime API...", flush=True)
+        print("Connecting to Gemini Live API...", flush=True)
         sys.stdout.flush()
 
-        # Create SSL context with certifi's CA bundle
-        import ssl
-        import certifi
-        ssl_context = ssl.create_default_context(cafile=certifi.where())
+        # Connect to Gemini Live API - updated config format
+        config = types.LiveConnectConfig(
+            response_modalities=["AUDIO"],
+            speech_config=types.SpeechConfig(
+                voice_config=types.VoiceConfig(
+                    prebuilt_voice_config=types.PrebuiltVoiceConfig(voice_name="Puck")
+                )
+            ),
+            output_audio_transcription=types.AudioTranscriptionConfig(),
+            input_audio_transcription=types.AudioTranscriptionConfig(),
+            system_instruction=system_instruction + "\n\nIMPORTANT: The user speaks English. Always interpret their speech as English."
+        )
 
-        openai_ws = await websockets.connect(url, extra_headers=headers, ssl=ssl_context)
-        print("Connected to OpenAI Realtime API!", flush=True)
-        sys.stdout.flush()
+        async with gemini_client.aio.live.connect(model="models/gemini-2.0-flash-exp", config=config) as session:
+            print("Connected to Gemini Live API!", flush=True)
+            sys.stdout.flush()
 
-        # Configure the session with British voice and system prompt
-        session_config = {
-            "type": "session.update",
-            "session": {
-                "modalities": ["text", "audio"],
-                "voice": "shimmer",  # Soft and gentle voice
-                "input_audio_format": "pcm16",
-                "output_audio_format": "pcm16",
-                "input_audio_transcription": {
-                    "model": "whisper-1"
-                },
-                "turn_detection": {
-                    "type": "server_vad",
-                    "threshold": 0.4,  # Lower threshold = more sensitive to speech detection
-                    "prefix_padding_ms": 300,  # Capture start of speech
-                    "silence_duration_ms": 1000  # Wait 1 second of silence before considering speech done
-                },
-                "temperature": 0.6,  # Lower temperature for more focused, less creative responses
-                "max_response_output_tokens": 1000,  # Limit response length
-                "instructions": SYSTEM_PROMPT.replace("You MUST always return a JSON object with two fields:\n1. 'reply': Your supportive text response to the user.\n2. 'userSentiment': One of 'POSITIVE', 'NEGATIVE', or 'NEUTRAL'.", "")
-            }
-        }
-
-        await openai_ws.send(json.dumps(session_config))
-        print("Session configured")
-
-        # Create tasks to handle bidirectional communication
-        async def forward_to_openai():
-            """Forward messages from client to OpenAI"""
-            try:
-                while True:
-                    # Receive from client
-                    data = await websocket.receive_text()
-                    message = json.loads(data)
-
-                    # Forward to OpenAI
-                    await openai_ws.send(json.dumps(message))
-
-            except WebSocketDisconnect:
-                print("Client disconnected")
-            except Exception as e:
-                print(f"Error forwarding to OpenAI: {e}")
-
-        async def forward_to_client():
-            """Forward messages from OpenAI to client"""
             # Audio buffering variables
             audio_buffer = []
             buffer_sample_count = 0
             BUFFER_THRESHOLD = 6000  # ~250ms at 24kHz sample rate
 
-            try:
-                while True:
-                    # Receive from OpenAI
-                    message = await openai_ws.recv()
+            # Create tasks to handle bidirectional communication
+            # Track turn state
+            turn_count = [0]  # Using list to allow modification in nested function
 
-                    # Parse and analyze for sentiment
-                    try:
-                        msg_data = json.loads(message)
-                        msg_type = msg_data.get("type")
+            async def forward_to_gemini():
+                """Forward audio from client to Gemini"""
+                audio_chunk_count = 0
+                try:
+                    print("forward_to_gemini: Starting to listen for client audio...", flush=True)
+                    while True:
+                        # Receive from client
+                        data = await websocket.receive_text()
+                        message = json.loads(data)
+                        msg_type = message.get("type")
 
-                        # Log ALL event types for debugging
-                        print(f"Event received: {msg_type}", flush=True)
+                        # Handle different message types
+                        if msg_type == "input_audio_buffer.append":
+                            # Get base64 audio from client
+                            audio_b64 = message.get("audio")
+                            if audio_b64:
+                                # Decode base64 to bytes
+                                audio_bytes = base64.b64decode(audio_b64)
+                                audio_chunk_count += 1
 
-                        # Log ERROR events with full details
-                        if msg_type == "error":
-                            print(f"ERROR from OpenAI Realtime API: {json.dumps(msg_data, indent=2)}", flush=True)
+                                # Log every 50 chunks to avoid spam but show audio is flowing
+                                if audio_chunk_count % 50 == 0:
+                                    print(f"📡 Audio chunk #{audio_chunk_count} ({len(audio_bytes)} bytes) - Turn {turn_count[0]}", flush=True)
 
-                        # Log conversation items for debugging with full data
-                        if msg_type == "conversation.item.created":
-                            print(f"Conversation item created: {json.dumps(msg_data, indent=2)[:1000]}", flush=True)
+                                # Send to Gemini using send_realtime_input
+                                try:
+                                    await session.send_realtime_input(
+                                        audio=types.Blob(mime_type="audio/pcm", data=audio_bytes)
+                                    )
+                                except Exception as send_err:
+                                    print(f"❌ Error sending to Gemini: {send_err}", flush=True)
 
-                        # Check for transcript completion event (user's transcribed speech)
-                        if msg_type == "conversation.item.input_audio_transcription.completed":
-                            print(f"Transcription completed event: {json.dumps(msg_data, indent=2)}", flush=True)
-                            transcript = msg_data.get("transcript")
-                            if transcript and isinstance(transcript, str):
-                                transcript = transcript.strip()
-                                if len(transcript) > 3:
-                                    # Quick sentiment analysis
-                                    sentiment = analyze_sentiment(transcript)
-                                    print(f"User sentiment detected: {sentiment} for '{transcript}'", flush=True)
+                        elif msg_type == "input_audio_buffer.commit":
+                            # User finished speaking - just log it
+                            # Gemini's VAD should detect the silence and respond automatically
+                            print("🔚 Turn end detected - waiting for Gemini's VAD to trigger response", flush=True)
 
-                                    # Send sentiment update to client
-                                    sentiment_msg = {
-                                        "type": "sentiment.update",
-                                        "sentiment": sentiment
-                                    }
-                                    await websocket.send_text(json.dumps(sentiment_msg))
+                        elif msg_type == "response.cancel":
+                            # User interrupted - we don't need to do anything special
+                            # Gemini handles interruptions automatically
+                            print("User interrupted AI response", flush=True)
 
-                        # Alternative: Check response.audio_transcript.done for AI's response transcript
-                        if msg_type == "response.audio_transcript.done":
-                            print(f"AI transcript done: {json.dumps(msg_data, indent=2)[:500]}", flush=True)
+                except WebSocketDisconnect:
+                    print("Client disconnected", flush=True)
+                except Exception as e:
+                    print(f"❌ Error forwarding to Gemini: {e}", flush=True)
+                    import traceback
+                    traceback.print_exc()
+                finally:
+                    print("⚠️ forward_to_gemini task ended!", flush=True)
 
-                        # Buffer audio chunks
-                        if msg_type in ["response.audio.delta", "response.output_audio.delta"]:
-                            if msg_data.get("delta"):
-                                audio_buffer.append(msg_data["delta"])
-                                # Estimate sample count (base64 encoded, so roughly 1.33x the actual bytes)
-                                # Int16 PCM = 2 bytes per sample
-                                estimated_bytes = len(msg_data["delta"]) * 3 // 4  # decode base64
-                                buffer_sample_count += estimated_bytes // 2
+            # Track WebSocket state
+            ws_open = [True]
 
-                                # If buffer is full, flush it
-                                if buffer_sample_count >= BUFFER_THRESHOLD:
-                                    # Concatenate all buffered audio
-                                    combined_audio = ''.join(audio_buffer)
+            async def forward_to_client():
+                """Forward messages from Gemini to client"""
+                # Audio buffering variables (local to this function)
+                audio_buffer_local = []
+                buffer_sample_count_local = 0
+                # Transcript accumulators
+                ai_transcript_parts = []
+                user_transcript_parts = []
+                user_transcript_sent = [False]  # Track if we've sent the user transcript for this turn
+
+                async def safe_send(msg):
+                    """Send message only if WebSocket is still open"""
+                    if ws_open[0]:
+                        try:
+                            await websocket.send_text(json.dumps(msg))
+                            return True
+                        except Exception as e:
+                            print(f"Send failed, marking WS closed: {e}", flush=True)
+                            ws_open[0] = False
+                            return False
+                    return False
+
+                try:
+                    print("forward_to_client: Starting to listen for Gemini responses...", flush=True)
+                    # Keep receiving in a loop - session.receive() may end after each turn
+                    while True:
+                        print("🔄 Starting new receive loop iteration...", flush=True)
+                        async for response in session.receive():
+                            # Log full response structure to debug transcription
+                            if hasattr(response, 'server_content') and response.server_content:
+                                sc = response.server_content
+                                if hasattr(sc, 'input_transcription') and sc.input_transcription:
+                                    print(f"📝 Input transcription found: {sc.input_transcription}", flush=True)
+                                if hasattr(sc, 'output_transcription') and sc.output_transcription:
+                                    print(f"📝 Output transcription found: {sc.output_transcription}", flush=True)
+
+                            # Handle different response types
+                            if response.server_content:
+                                if response.server_content.model_turn and response.server_content.model_turn.parts:
+                                    for part in response.server_content.model_turn.parts:
+                                        # Handle audio output
+                                        if part.inline_data:
+                                            # When AI starts responding, send accumulated user transcript
+                                            if user_transcript_parts and not user_transcript_sent[0]:
+                                                full_user_transcript = ''.join(user_transcript_parts)
+                                                print(f"🎤 User full transcript: {full_user_transcript}", flush=True)
+                                                user_transcript_msg = {
+                                                    "type": "conversation.item.input_audio_transcription.completed",
+                                                    "transcript": full_user_transcript
+                                                }
+                                                await safe_send(user_transcript_msg)
+
+                                                # Analyze sentiment and send update
+                                                sentiment = analyze_sentiment(full_user_transcript)
+                                                print(f"🎭 Sentiment analyzed: {sentiment}", flush=True)
+                                                sentiment_msg = {
+                                                    "type": "sentiment.update",
+                                                    "sentiment": sentiment
+                                                }
+                                                await safe_send(sentiment_msg)
+
+                                                user_transcript_sent[0] = True
+
+                                            audio_bytes = part.inline_data.data
+                                            print(f"Got audio chunk: {len(audio_bytes)} bytes", flush=True)
+                                            # Convert to base64 for client
+                                            audio_b64 = base64.b64encode(audio_bytes).decode('utf-8')
+
+                                            # Buffer audio chunks
+                                            audio_buffer_local.append(audio_b64)
+                                            buffer_sample_count_local += len(audio_bytes) // 2  # PCM16 = 2 bytes per sample
+
+                                            # If buffer is full, flush it
+                                            if buffer_sample_count_local >= BUFFER_THRESHOLD:
+                                                combined_audio = ''.join(audio_buffer_local)
+                                                buffered_msg = {
+                                                    "type": "response.audio.delta",
+                                                    "delta": combined_audio
+                                                }
+                                                try:
+                                                    await websocket.send_text(json.dumps(buffered_msg))
+                                                    print(f"Flushed audio buffer: {buffer_sample_count_local} samples", flush=True)
+                                                except RuntimeError as e:
+                                                    print(f"WebSocket closed, stopping audio send: {e}", flush=True)
+                                                    return
+
+                                                # Reset buffer
+                                                audio_buffer_local.clear()
+                                                buffer_sample_count_local = 0
+
+                            # Handle AI output transcription (from output_transcription, not part.text)
+                            if response.server_content and response.server_content.output_transcription:
+                                text_part = response.server_content.output_transcription.text
+                                if text_part:
+                                    ai_transcript_parts.append(text_part)
+
+                            # Handle user speech transcription - accumulate chunks
+                            if response.server_content and response.server_content.input_transcription:
+                                user_transcript = response.server_content.input_transcription.text
+                                if user_transcript:
+                                    user_transcript_parts.append(user_transcript)
+
+                            # Handle tool calls (not used but log for debugging)
+                            if response.tool_call:
+                                print(f"Tool call received: {response.tool_call}", flush=True)
+
+                            # Flush remaining audio buffer on turn complete
+                            if response.server_content and response.server_content.turn_complete:
+                                turn_count[0] += 1
+                                print(f"✅ Turn {turn_count[0]} complete - ready for next input", flush=True)
+
+                                if audio_buffer_local:
+                                    combined_audio = ''.join(audio_buffer_local)
                                     buffered_msg = {
-                                        "type": msg_type,
+                                        "type": "response.audio.delta",
                                         "delta": combined_audio
                                     }
-                                    await websocket.send_text(json.dumps(buffered_msg))
-                                    print(f"Flushed audio buffer: {buffer_sample_count} samples", flush=True)
+                                    await safe_send(buffered_msg)
+                                    print(f"Flushed final audio buffer: {buffer_sample_count_local} samples", flush=True)
 
                                     # Reset buffer
-                                    audio_buffer = []
-                                    buffer_sample_count = 0
-                                continue  # Don't forward individual deltas
+                                    audio_buffer_local.clear()
+                                    buffer_sample_count_local = 0
 
-                        # Flush buffer on audio completion
-                        if msg_type in ["response.audio.done", "response.output_audio.done", "input_audio_buffer.speech_started"]:
-                            if audio_buffer:
-                                # Send remaining buffered audio
-                                combined_audio = ''.join(audio_buffer)
-                                buffered_msg = {
-                                    "type": "response.audio.delta",
-                                    "delta": combined_audio
+                                # Send AI transcript if we have one
+                                if ai_transcript_parts:
+                                    full_transcript = ''.join(ai_transcript_parts)
+                                    print(f"🤖 AI full transcript: {full_transcript}", flush=True)
+                                    transcript_msg = {
+                                        "type": "response.audio_transcript.done",
+                                        "transcript": full_transcript
+                                    }
+                                    await safe_send(transcript_msg)
+                                    ai_transcript_parts.clear()
+
+                                # Reset user transcript state for next turn
+                                user_transcript_parts.clear()
+                                user_transcript_sent[0] = False
+
+                                # Send completion event
+                                done_msg = {
+                                    "type": "response.done"
                                 }
-                                await websocket.send_text(json.dumps(buffered_msg))
-                                print(f"Flushed final audio buffer: {buffer_sample_count} samples", flush=True)
+                                await safe_send(done_msg)
 
-                                # Reset buffer
-                                audio_buffer = []
-                                buffer_sample_count = 0
+                        # If we get here, the receive iterator ended - log and continue the while loop
+                        print("🔄 Receive iterator ended, waiting before restart...", flush=True)
+                        await asyncio.sleep(0.1)  # Small delay before restarting
 
-                    except Exception as e:
-                        print(f"Error parsing sentiment: {e}", flush=True)
+                except Exception as e:
+                    print(f"❌ Error forwarding to client: {e}", flush=True)
+                    import traceback
+                    traceback.print_exc()
+                finally:
+                    print("⚠️ forward_to_client task ended!", flush=True)
 
-                    # Forward original message to client
-                    await websocket.send_text(message)
-
-            except websockets.exceptions.ConnectionClosed:
-                print("OpenAI connection closed")
+            # Run both tasks concurrently
+            print("Starting forward tasks...", flush=True)
+            try:
+                await asyncio.gather(
+                    forward_to_gemini(),
+                    forward_to_client(),
+                    return_exceptions=True
+                )
             except Exception as e:
-                print(f"Error forwarding to client: {e}")
-
-        # Run both tasks concurrently
-        await asyncio.gather(
-            forward_to_openai(),
-            forward_to_client()
-        )
+                print(f"Error in gather: {e}", flush=True)
+                import traceback
+                traceback.print_exc()
 
     except Exception as e:
         import traceback
@@ -564,12 +661,6 @@ async def websocket_realtime(websocket: WebSocket):
             await websocket.close()
         except:
             pass
-    finally:
-        if openai_ws:
-            try:
-                await openai_ws.close()
-            except:
-                pass
 
 
 if __name__ == "__main__":
