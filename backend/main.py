@@ -197,7 +197,7 @@ async def websocket_realtime(websocket: WebSocket):
 
                                 # Log every 50 chunks to avoid spam but show audio is flowing
                                 if audio_chunk_count % 50 == 0:
-                                    print(f"📡 Audio chunk #{audio_chunk_count} ({len(audio_bytes)} bytes) - Turn {turn_count[0]}", flush=True)
+                                    print(f"Audio chunk #{audio_chunk_count} ({len(audio_bytes)} bytes) - Turn {turn_count[0]}", flush=True)
 
                                 # Send to Gemini using send_realtime_input
                                 try:
@@ -205,10 +205,10 @@ async def websocket_realtime(websocket: WebSocket):
                                         audio=types.Blob(mime_type="audio/pcm", data=audio_bytes)
                                     )
                                 except Exception as send_err:
-                                    print(f"❌ Error sending to Gemini: {send_err}", flush=True)
+                                    print(f"Error sending to Gemini: {send_err}", flush=True)
 
                         elif msg_type == "input_audio_buffer.commit":
-                            print("🔚 Turn end detected - waiting for Gemini's VAD to trigger response", flush=True)
+                            print("Turn end detected - waiting for Gemini's VAD to trigger response", flush=True)
 
                         elif msg_type == "response.cancel":
                             print("User interrupted AI response", flush=True)
@@ -216,11 +216,11 @@ async def websocket_realtime(websocket: WebSocket):
                 except WebSocketDisconnect:
                     print("Client disconnected", flush=True)
                 except Exception as e:
-                    print(f"❌ Error forwarding to Gemini: {e}", flush=True)
+                    print(f"Error forwarding to Gemini: {e}", flush=True)
                     import traceback
                     traceback.print_exc()
                 finally:
-                    print("⚠️ forward_to_gemini task ended!", flush=True)
+                    print("forward_to_gemini task ended!", flush=True)
 
             # Track WebSocket state
             ws_open = [True]
@@ -252,15 +252,15 @@ async def websocket_realtime(websocket: WebSocket):
                     print("forward_to_client: Starting to listen for Gemini responses...", flush=True)
                     # Keep receiving in a loop - session.receive() may end after each turn
                     while True:
-                        print("🔄 Starting new receive loop iteration...", flush=True)
+                        print("Starting new receive loop iteration...", flush=True)
                         async for response in session.receive():
                             # Log full response structure to debug transcription
                             if hasattr(response, 'server_content') and response.server_content:
                                 sc = response.server_content
                                 if hasattr(sc, 'input_transcription') and sc.input_transcription:
-                                    print(f"📝 Input transcription found: {sc.input_transcription}", flush=True)
+                                    print(f"Input transcription found: {sc.input_transcription}", flush=True)
                                 if hasattr(sc, 'output_transcription') and sc.output_transcription:
-                                    print(f"📝 Output transcription found: {sc.output_transcription}", flush=True)
+                                    print(f"Output transcription found: {sc.output_transcription}", flush=True)
 
                             # Handle different response types
                             if response.server_content:
@@ -271,7 +271,7 @@ async def websocket_realtime(websocket: WebSocket):
                                             # When AI starts responding, send accumulated user transcript
                                             if user_transcript_parts and not user_transcript_sent[0]:
                                                 full_user_transcript = ''.join(user_transcript_parts)
-                                                print(f"🎤 User full transcript: {full_user_transcript}", flush=True)
+                                                print(f"User full transcript: {full_user_transcript}", flush=True)
                                                 user_transcript_msg = {
                                                     "type": "conversation.item.input_audio_transcription.completed",
                                                     "transcript": full_user_transcript
@@ -280,7 +280,7 @@ async def websocket_realtime(websocket: WebSocket):
 
                                                 # Analyze sentiment and send update
                                                 sentiment = analyze_sentiment(full_user_transcript)
-                                                print(f"🎭 Sentiment analyzed: {sentiment}", flush=True)
+                                                print(f"Sentiment analyzed: {sentiment}", flush=True)
                                                 sentiment_msg = {
                                                     "type": "sentiment.update",
                                                     "sentiment": sentiment
@@ -330,7 +330,7 @@ async def websocket_realtime(websocket: WebSocket):
                                     speech_msg = {"type": "input_audio_buffer.speech_started"}
                                     await safe_send(speech_msg)
                                     speech_started_sent[0] = True
-                                    print("🎙️ User interrupting AI - sent interrupt signal", flush=True)
+                                    print("User interrupting AI - sent interrupt signal", flush=True)
 
                                 user_transcript = response.server_content.input_transcription.text
                                 if user_transcript:
@@ -343,7 +343,7 @@ async def websocket_realtime(websocket: WebSocket):
                             # Flush remaining audio buffer on turn complete
                             if response.server_content and response.server_content.turn_complete:
                                 turn_count[0] += 1
-                                print(f"✅ Turn {turn_count[0]} complete - ready for next input", flush=True)
+                                print(f"Turn {turn_count[0]} complete - ready for next input", flush=True)
 
                                 if audio_buffer_local:
                                     combined_audio = ''.join(audio_buffer_local)
@@ -361,7 +361,7 @@ async def websocket_realtime(websocket: WebSocket):
                                 # Send AI transcript if we have one
                                 if ai_transcript_parts:
                                     full_transcript = ''.join(ai_transcript_parts)
-                                    print(f"🤖 AI full transcript: {full_transcript}", flush=True)
+                                    print(f"AI full transcript: {full_transcript}", flush=True)
                                     transcript_msg = {
                                         "type": "response.audio_transcript.done",
                                         "transcript": full_transcript
@@ -381,15 +381,15 @@ async def websocket_realtime(websocket: WebSocket):
                                 await safe_send(done_msg)
 
                         # If we get here, the receive iterator ended - log and continue the while loop
-                        print("🔄 Receive iterator ended, waiting before restart...", flush=True)
+                        print("Receive iterator ended, waiting before restart...", flush=True)
                         await asyncio.sleep(0.1)  # Small delay before restarting
 
                 except Exception as e:
-                    print(f"❌ Error forwarding to client: {e}", flush=True)
+                    print(f"Error forwarding to client: {e}", flush=True)
                     import traceback
                     traceback.print_exc()
                 finally:
-                    print("⚠️ forward_to_client task ended!", flush=True)
+                    print("forward_to_client task ended!", flush=True)
 
             # Run both tasks concurrently
             print("Starting forward tasks...", flush=True)

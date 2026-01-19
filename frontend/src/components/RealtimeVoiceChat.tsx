@@ -196,16 +196,16 @@ export const RealtimeVoiceChat: React.FC<RealtimeVoiceChatProps> = ({
               break;
 
             case 'response.done':
-              console.log('✅ Response complete - ready for next voice input');
+              console.log('Response complete - ready for next voice input');
               break;
 
             case 'sentiment.update':
-              console.log('🎭 Sentiment update received:', message.sentiment);
+              console.log('Sentiment update received:', message.sentiment);
               if (message.sentiment && onSentimentChange) {
-                console.log('🎭 Calling onSentimentChange with:', message.sentiment);
+                console.log('Calling onSentimentChange with:', message.sentiment);
                 onSentimentChange(message.sentiment);
               } else {
-                console.log('🎭 onSentimentChange not called - sentiment:', message.sentiment, 'callback:', !!onSentimentChange);
+                console.log('onSentimentChange not called - sentiment:', message.sentiment, 'callback:', !!onSentimentChange);
               }
               break;
 
@@ -294,10 +294,10 @@ export const RealtimeVoiceChat: React.FC<RealtimeVoiceChatProps> = ({
 
         // Track speaking state for UI feedback only
         if (isSpeaking && !isSpeakingRef.current) {
-          console.log('🎤 Speech detected (volume:', volume.toFixed(3), ')');
+          console.log('Speech detected (volume:', volume.toFixed(3), ')');
           isSpeakingRef.current = true;
         } else if (!isSpeaking && isSpeakingRef.current) {
-          console.log('🤫 Silence detected');
+          console.log('Silence detected');
           isSpeakingRef.current = false;
         }
       };

@@ -177,15 +177,15 @@ const App: React.FC = () => {
   };
 
   const handleSentimentChange = (sentimentStr: string) => {
-    console.log('🎨 handleSentimentChange called with:', sentimentStr);
+    console.log('handleSentimentChange called with:', sentimentStr);
     const sentimentMap: { [key: string]: SentimentState } = {
       'POSITIVE': SentimentState.POSITIVE,
       'NEGATIVE': SentimentState.NEGATIVE,
       'NEUTRAL': SentimentState.NEUTRAL
     };
     const newSentiment = sentimentMap[sentimentStr] || SentimentState.NEUTRAL;
-    console.log('🎨 Setting sentiment to:', newSentiment);
-    console.log('🎨 Current sentiment before update:', sentiment);
+    console.log('Setting sentiment to:', newSentiment);
+    console.log('Current sentiment before update:', sentiment);
     setSentiment(newSentiment);
   };
 
