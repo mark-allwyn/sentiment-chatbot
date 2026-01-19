@@ -1,10 +1,12 @@
-# Ellen - AI Companion Chatbot
+# Ellen - AI Companion Chatbot (Gemini Branch)
 
-A sentiment-aware AI companion web application with real-time voice chat designed to provide caring support and companionship. Built with Python FastAPI backend, React frontend, and cutting-edge AI models for intelligent conversations with real-time sentiment analysis.
+A sentiment-aware AI companion web application with real-time voice chat designed to provide caring support and companionship. Built with Python FastAPI backend, React frontend, and **Google Gemini 2.0 Flash** for intelligent conversations with real-time sentiment analysis.
+
+> **Note:** This branch uses Google's Gemini Live API. For the OpenAI version, see the `main` or `feature/openai-models` branch.
 
 ## Features
 
-- **Real-time Voice Chat**: Continuous conversation mode with OpenAI Realtime API
+- **Real-time Voice Chat**: Continuous conversation mode with Gemini Live API
 - **Text Chat**: Traditional text-based conversation interface
 - **Sentiment Analysis**: Real-time emotion detection (Positive, Negative, Neutral)
 - **Adaptive Avatar**: Pulsating, color-changing visual indicator based on user sentiment
@@ -17,37 +19,25 @@ A sentiment-aware AI companion web application with real-time voice chat designe
 ## AI Models & Technologies
 
 ### Real-time Voice Chat (Primary Mode)
-- **Model**: `gpt-4o-realtime-preview-2024-12-17`
-- **Provider**: OpenAI Realtime API
-- **Voice**: Echo (clear, neutral voice at 1.05x speed)
-- **Transcription**: Whisper-1 (integrated)
+- **Model**: `gemini-2.0-flash-exp`
+- **Provider**: Google Gemini Live API
+- **Voice**: Native Gemini voice synthesis
+- **Transcription**: Built-in real-time transcription (input & output)
 - **Purpose**: Low-latency voice-to-voice conversation with streaming audio
 - **Features**:
   - Server-side Voice Activity Detection (VAD)
   - Automatic turn detection
   - Real-time interruption support
   - Streaming audio responses
-  - Integrated transcription
+  - Integrated input/output transcription
 - **Performance**:
   - Response latency: ~500ms-1s
   - Seamless audio playback with Web Audio API scheduling
-  - Threshold: 0.5 (sensitive to quieter speech)
-  - Prefix padding: 500ms (captures start of speech)
-  - Silence duration: 800ms (fast response time)
 
-### Text Chat & Sentiment Analysis
-- **Model**: `gpt-4o-mini`
-- **Provider**: OpenAI API
-- **Purpose**: Generates empathetic responses and analyzes user sentiment
-- **Performance**: ~2-3 seconds per response
-- **Output Format**: JSON with `reply` and `userSentiment` fields
-
-### Legacy Voice Chat (Hold-to-Talk)
-- **Speech-to-Text**: `gpt-4o-mini-transcribe-2025-12-15` (90% fewer hallucinations)
-- **Chat**: `gpt-4o-mini`
-- **Text-to-Speech**: `tts-1` (OpenAI)
-- **Purpose**: Alternative voice input mode with manual control
-- **Performance**: ~4-7 seconds end-to-end
+### Sentiment Analysis
+- **Model**: Built-in analysis using TextBlob
+- **Purpose**: Analyzes user sentiment from transcribed speech
+- **Output**: POSITIVE, NEGATIVE, or NEUTRAL classification
 
 ## System Prompt
 
@@ -85,17 +75,17 @@ You have a secondary task: Analyse the user's input to determine their sentiment
 │  ┌──────────────────────────────────────────────────────┐  │
 │  │  /api/chat          /ws/realtime                     │  │
 │  └──────────────────────────────────────────────────────┘  │
-│         │                          │                       │
-│         ▼                          ▼                       │
-│  ┌─────────────┐          ┌─────────────────┐             │
-│  │  GPT-4o-mini│          │ GPT-4o-Realtime │             │
-│  │  (OpenAI)   │          │    (OpenAI)     │             │
-│  └─────────────┘          └─────────────────┘             │
-│         │                    │    │    │                   │
-│         │                    │    │    └─ Audio (PCM16)    │
-│         │                    │    └────── Transcription    │
-│         │                    └─────────── Sentiment        │
-│         ▼                          │                       │
+│                                │                           │
+│                                ▼                           │
+│                    ┌─────────────────────┐                 │
+│                    │  Gemini 2.0 Flash   │                 │
+│                    │  (Google Live API)  │                 │
+│                    └─────────────────────┘                 │
+│                       │    │    │                          │
+│                       │    │    └─ Audio (PCM16)           │
+│                       │    └────── Transcription           │
+│                       └─────────── Sentiment (TextBlob)    │
+│                                │                           │
 │  ┌──────────────────────────────────────────────────────┐  │
 │  │            Response with Sentiment                   │  │
 │  └──────────────────────────────────────────────────────┘  │
@@ -106,7 +96,7 @@ You have a secondary task: Analyse the user's input to determine their sentiment
 
 - **Python 3.9+**
 - **Node.js 16+**
-- **OpenAI API key** (with Realtime API access)
+- **Google API key** (with Gemini API access)
 - **Modern web browser** with microphone support
 
 ## Setup Instructions
@@ -132,16 +122,17 @@ pip install -r requirements.txt
 
 # Configure environment variables
 # Create a .env file in backend/ with:
-echo "OPENAI_API_KEY=your_openai_api_key_here" > .env
+echo "GOOGLE_API_KEY=your_google_api_key_here" > .env
 ```
 
 **Required Python packages:**
 - fastapi
 - uvicorn
-- openai
+- google-genai
 - python-dotenv
 - websockets
 - python-multipart
+- textblob
 
 ### 3. Frontend Setup
 
@@ -200,7 +191,7 @@ Open your browser and navigate to: `http://localhost:2177`
 │   │   ├── components/
 │   │   │   ├── Avatar.tsx                # Sentiment-aware avatar
 │   │   │   ├── TypingIndicator.tsx       # Loading animation
-│   │   │   ├── RealtimeVoiceChat.tsx     # OpenAI Realtime API component
+│   │   │   ├── RealtimeVoiceChat.tsx     # Gemini Live API component
 │   │   │   ├── ContinuousVoiceChat.tsx   # Alternative continuous mode
 │   │   │   └── VoiceRecorder.tsx         # Legacy hold-to-talk component
 │   │   └── services/
@@ -227,30 +218,19 @@ Open your browser and navigate to: `http://localhost:2177`
 
 ### Real-time Voice Chat
 - **WebSocket** `/ws/realtime`
-  - Protocol: OpenAI Realtime API protocol
+  - Protocol: Gemini Live API protocol
   - Bidirectional streaming of audio and events
   - Supports interruption and turn-taking
-
-### Voice Configuration
-- **POST** `/api/voice-config`
-  - Body: `{ "voice": "echo|shimmer|alloy|...", "session_id": "string" }`
-  - Response: `{ "message": "string", "voice": "string" }`
-
-- **GET** `/api/voice-config/{session_id}`
-  - Response: `{ "voice": "string" }`
 
 ## Environment Variables
 
 ### Backend (.env)
 ```env
-OPENAI_API_KEY=your_openai_api_key_here
+GOOGLE_API_KEY=your_google_api_key_here
 ```
 
-**Important:** Ensure your OpenAI API key has access to:
-- GPT-4o-mini (text chat)
-- GPT-4o-mini-transcribe (voice transcription)
-- GPT-4o-realtime-preview (real-time voice chat)
-- TTS-1 (text-to-speech)
+**Important:** Ensure your Google API key has access to:
+- Gemini 2.0 Flash (real-time voice chat)
 
 ## Usage
 
@@ -292,34 +272,14 @@ OPENAI_API_KEY=your_openai_api_key_here
 - **Initial connection**: ~500ms
 - **Response latency**: 500ms-1s (streaming starts immediately)
 - **Audio quality**: 24kHz PCM16, automatically resampled by browser
-- **Playback speed**: 1.05x for natural, responsive feel
-
-### Text Chat
-- **Response time**: 2-3 seconds
-
-### Legacy Voice Chat
-- **End-to-end**: 4-7 seconds
-  - Transcription: ~1-2s (gpt-4o-mini-transcribe)
-  - GPT response: ~2-3s
-  - TTS generation: ~1-2s
 
 ## Audio Configuration
 
 ### Real-time Voice Chat Settings
-- **Sample Rate**: 24kHz (OpenAI) → Browser native (44.1kHz/48kHz with automatic resampling)
+- **Sample Rate**: 24kHz (Gemini) → Browser native (44.1kHz/48kHz with automatic resampling)
 - **Format**: PCM16 (16-bit linear PCM)
 - **Channels**: Mono
-- **Playback Speed**: 1.05x (subtle speed increase for more responsive feel)
-- **VAD Threshold**: 0.5 (sensitive to quieter speech)
-- **VAD Prefix Padding**: 500ms (captures beginning of speech)
-- **VAD Silence Duration**: 800ms (fast turn-taking)
-
-### Voice Options
-Available voices for real-time chat:
-- **echo** (default) - Clear, neutral voice
-- **alloy** - Balanced, versatile voice
-- **shimmer** - Warm, expressive voice
-- **ash**, **ballad**, **coral**, **sage**, **verse**, **marin**, **cedar**
+- **VAD**: Server-side voice activity detection (Gemini built-in)
 
 ## Development
 
@@ -380,31 +340,29 @@ gunicorn -w 4 -k uvicorn.workers.UvicornWorker main:app --bind 0.0.0.0:2179
 - Try a different browser (Chrome/Edge recommended)
 - Check browser console for errors
 
-**Audio playing at wrong speed:**
+**Audio playback issues:**
 - Clear browser cache and reload
-- Ensure latest version of the code is deployed
 - Check browser console for AudioContext errors
+- Ensure microphone permissions are granted
 
 **Transcription inaccuracies:**
 - Reduce background noise
 - Speak clearly and at moderate volume
 - Use headphones to prevent echo/feedback
 - Move closer to microphone
-- Note: Realtime API uses older Whisper-1 model (transcription quality is limited by OpenAI)
 
 **WebSocket connection fails:**
 - Check backend is running on port 2179
-- Verify OpenAI API key is valid and has Realtime API access
+- Verify Google API key is valid and has Gemini API access
 - Check backend console logs for detailed errors
 - Ensure no firewall blocking WebSocket connections
 
 ### Text Chat Issues
 
 **API errors:**
-- Verify your OpenAI API key is correctly set in `.env`
-- Check if you have sufficient OpenAI API credits
+- Verify your Google API key is correctly set in `.env`
+- Check if you have sufficient Google API credits
 - Review backend logs for detailed error messages
-- Ensure API key has access to GPT-4o-mini
 
 ### General Issues
 
@@ -424,10 +382,11 @@ gunicorn -w 4 -k uvicorn.workers.UvicornWorker main:app --bind 0.0.0.0:2179
 
 **Backend:**
 - FastAPI (Python web framework)
-- OpenAI Python SDK (GPT-4o-mini, Realtime API)
+- Google GenAI SDK (Gemini 2.0 Flash)
 - Websockets (Real-time communication)
 - Uvicorn (ASGI server)
 - Python-multipart (File uploads)
+- TextBlob (Sentiment analysis)
 
 **Frontend:**
 - React 18
@@ -441,20 +400,16 @@ gunicorn -w 4 -k uvicorn.workers.UvicornWorker main:app --bind 0.0.0.0:2179
 - WebSocket (Real-time communication)
 
 **AI & Audio:**
-- OpenAI GPT-4o-mini (Chat & sentiment analysis)
-- OpenAI GPT-4o-realtime-preview (Real-time voice)
-- OpenAI Whisper-1 (Real-time transcription)
-- OpenAI gpt-4o-mini-transcribe (Legacy transcription, 90% fewer hallucinations)
-- OpenAI TTS-1 (Legacy text-to-speech)
+- Google Gemini 2.0 Flash (Real-time voice & transcription)
+- TextBlob (Sentiment analysis)
 
 ## Known Limitations
 
-1. **Realtime API transcription**: Uses older Whisper-1 model, which may have more hallucinations than newer models
-2. **Browser compatibility**: Real-time voice chat works best in Chrome/Edge
-3. **Audio sample rate**: Limited by OpenAI Realtime API (24kHz, browser resamples)
-4. **Background noise**: Can affect transcription accuracy
-5. **API costs**: Real-time API usage costs more than standard API calls
-6. **Network latency**: May affect real-time conversation quality on slow connections
+1. **Browser compatibility**: Real-time voice chat works best in Chrome/Edge
+2. **Audio sample rate**: Limited by Gemini Live API (24kHz, browser resamples)
+3. **Background noise**: Can affect transcription accuracy
+4. **Network latency**: May affect real-time conversation quality on slow connections
+5. **Gemini 2.0 Flash**: Currently in experimental phase (`gemini-2.0-flash-exp`)
 
 ## Future Enhancements
 
@@ -482,7 +437,7 @@ Contributions are welcome! Please ensure:
 
 ## Acknowledgments
 
-- OpenAI for GPT-4o-mini and Realtime API
+- Google for Gemini 2.0 Flash and the Live API
 - The React and FastAPI communities
 - The open-source community for amazing tools and libraries
 
